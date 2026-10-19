@@ -218,3 +218,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+node_modules/
+dist/
+.env
+client_secret*.json
+token*.json
+*.db
+real_mails/
+*.labeled.csv
