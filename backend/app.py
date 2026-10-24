@@ -108,7 +108,7 @@ def login():
     session["oauth_state"] = state
     session["oauth_code_verifier"] = code_verifier
 
-    app.logger.info(
+    app.logger.warning(
         "OAuth login: state_saved=%s, verifier_saved=%s, "
         "session_cookie_name=%s, redirect_uri=%s",
         bool(session.get("oauth_state")),
@@ -123,7 +123,7 @@ def login():
 @app.get("/auth/callback")
 def callback():
     # Diagnostic only: never log cookie values or OAuth secrets.
-    app.logger.info(
+    app.logger.warning(
         "OAuth callback: cookie_received=%s, state_present=%s, "
         "verifier_present=%s",
         app.config["SESSION_COOKIE_NAME"] in request.cookies,
