@@ -1,3 +1,4 @@
+
 import os
 import re
 import base64
@@ -6,7 +7,6 @@ import secrets
 from dotenv import load_dotenv
 
 # Load local .env values before reading environment variables.
-# On Gasper, configure these variables through the deployment environment.
 load_dotenv()
 
 from flask import Flask, jsonify, redirect, request, session
@@ -18,11 +18,13 @@ from .ai_classifier import classify_with_ai
 
 app = Flask(__name__)
 
-# Set SESSION_SECRET in the environment for stable sessions across restarts.
+# Stable session signing key.
 app.secret_key = os.environ.get("SESSION_SECRET")
+
 if not app.secret_key:
     if os.environ.get("FLASK_ENV") == "production":
         raise RuntimeError("SESSION_SECRET must be configured in production.")
+
     app.secret_key = secrets.token_hex(32)
     app.logger.warning(
         "SESSION_SECRET is not set. Sessions will be invalidated on restart."
@@ -31,15 +33,21 @@ if not app.secret_key:
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET")
 
+# Use the deployed URL by default. Local .env can override this.
 REDIRECT_URI = os.environ.get(
     "GOOGLE_REDIRECT_URI",
-    "http://127.0.0.1:5000/auth/callback",
+    "https://insorta-app-gasper.sdslabs.org/auth/callback",
 )
 
 GMAIL_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 
-# Temporary in-memory credential storage, keyed by session ID.
-# A server restart clears credentials, so users must sign in again.
+# Browser session cookie settings.
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SECURE"] = REDIRECT_URI.startswith("https://")
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+
+# Temporary in-memory credential storage.
+# A server restart clears credentials; users must sign in again.
 google_credentials = {}
 
 
@@ -100,14 +108,33 @@ def login():
     session["oauth_state"] = state
     session["oauth_code_verifier"] = code_verifier
 
+    app.logger.info(
+        "OAuth login: state_saved=%s, verifier_saved=%s, "
+        "session_cookie_name=%s, redirect_uri=%s",
+        bool(session.get("oauth_state")),
+        bool(session.get("oauth_code_verifier")),
+        app.config.get("SESSION_COOKIE_NAME"),
+        REDIRECT_URI,
+    )
+
     return redirect(authorization_url)
 
 
 @app.get("/auth/callback")
 def callback():
+    # Diagnostic only: never log cookie values or OAuth secrets.
+    app.logger.info(
+        "OAuth callback: cookie_received=%s, state_present=%s, "
+        "verifier_present=%s",
+        app.config["SESSION_COOKIE_NAME"] in request.cookies,
+        bool(session.get("oauth_state")),
+        bool(session.get("oauth_code_verifier")),
+    )
+
     if request.args.get("error"):
         session.pop("oauth_state", None)
         session.pop("oauth_code_verifier", None)
+
         return jsonify({
             "error": "Google sign-in was cancelled or denied."
         }), 400
@@ -126,14 +153,19 @@ def callback():
     )
 
     if flow is None:
-        return jsonify({"error": "Google OAuth is not configured."}), 503
+        return jsonify({
+            "error": "Google OAuth is not configured."
+        }), 503
 
     try:
-        # Use the configured redirect URI, including the query parameters.
         authorization_response = (
             f"{REDIRECT_URI}?{request.query_string.decode('utf-8')}"
         )
-        flow.fetch_token(authorization_response=authorization_response)
+
+        flow.fetch_token(
+            authorization_response=authorization_response
+        )
+
         credentials = flow.credentials
 
         google_credentials[sid()] = credentials
@@ -150,6 +182,7 @@ def callback():
 
     except Exception:
         app.logger.exception("Google OAuth callback failed")
+
         session.pop("oauth_state", None)
         session.pop("oauth_code_verifier", None)
 
@@ -172,6 +205,7 @@ def gmail_messages():
 
     if credentials is None:
         session.pop("google_connected", None)
+
         return jsonify({
             "error": "Credentials unavailable. Sign in again at /auth/login."
         }), 401
@@ -193,6 +227,7 @@ def gmail_messages():
 
     except Exception:
         app.logger.exception("Gmail fetch failed")
+
         return jsonify({
             "error": "Could not fetch Gmail messages. Check the server log."
         }), 500
@@ -205,6 +240,7 @@ def decode_body(data):
 
     padding = "=" * (-len(data) % 4)
     decoded = base64.urlsafe_b64decode(data + padding)
+
     return decoded.decode("utf-8", errors="replace")
 
 
@@ -220,6 +256,7 @@ def extract_text(payload):
 
     for part in payload.get("parts", []):
         text = extract_text(part)
+
         if text:
             texts.append(text)
 
@@ -331,7 +368,10 @@ def classify(mail):
     ]
 
     for category, keywords in rules:
-        matched = [keyword for keyword in keywords if keyword in text]
+        matched = [
+            keyword for keyword in keywords
+            if keyword in text
+        ]
 
         if matched:
             app.logger.debug(
@@ -340,6 +380,7 @@ def classify(mail):
                 category,
                 matched,
             )
+
             return {
                 "category": category,
                 "confidence": 0.65,
@@ -361,6 +402,7 @@ def gmail_inbox():
 
     if credentials is None:
         session.pop("google_connected", None)
+
         return jsonify({
             "error": "Credentials unavailable. Sign in again."
         }), 401
@@ -383,9 +425,10 @@ def gmail_inbox():
             ).execute()
 
             headers = message.get("payload", {}).get("headers", [])
+
             header_map = {
-                h["name"].lower(): h["value"]
-                for h in headers
+                header["name"].lower(): header["value"]
+                for header in headers
             }
 
             body_text = extract_text(message.get("payload", {}))
@@ -431,11 +474,12 @@ def gmail_inbox():
 
     except Exception:
         app.logger.exception("Gmail inbox fetch failed")
+
         return jsonify({
-            "error": "Could not fetch inbox. Check the Flask terminal."
+            "error": "Could not fetch inbox. Check the server log."
         }), 500
 
 
 if __name__ == "__main__":
-    # Local development only; Gasper should run run.py with its own command.
+    # Local development only.
     app.run(host="127.0.0.1", port=5000, debug=True)
