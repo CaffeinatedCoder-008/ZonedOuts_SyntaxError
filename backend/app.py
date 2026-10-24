@@ -3,20 +3,26 @@ import os
 import re
 import base64
 import secrets
+import time
+import json
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 
 from dotenv import load_dotenv
 
 # Load local .env values before reading environment variables.
 load_dotenv()
 
-from flask import Flask, jsonify, redirect, request, session
+from flask import Flask, jsonify, redirect, request, send_from_directory, session
 from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
 from .ai_classifier import classify_with_ai
 
 
-app = Flask(__name__)
+# static_url_path="" serves backend/static/ at the site root, so a built
+# frontend (index.html + /assets/...) can simply be dropped into that folder.
+app = Flask(__name__, static_folder="static", static_url_path="")
 
 # Stable session signing key.
 app.secret_key = os.environ.get("SESSION_SECRET")
@@ -50,6 +56,57 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 # A server restart clears credentials; users must sign in again.
 google_credentials = {}
 
+# Classification results persist across logins and server restarts.
+# Production deployments should point this at a persistent mounted volume.
+DATABASE_PATH = os.environ.get(
+    "INSORTA_DB_PATH",
+    os.path.join(os.path.dirname(__file__), "instance", "insorta.sqlite3"),
+)
+MAX_PARALLEL = 5         # mails processed at once (stays under Gemini's free limit)
+INBOX_FETCH_LIMIT = 100   # newest Gmail messages to classify on each inbox refresh
+
+
+def init_database():
+    os.makedirs(os.path.dirname(os.path.abspath(DATABASE_PATH)), exist_ok=True)
+    with sqlite3.connect(DATABASE_PATH) as db:
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS classified_mail (
+                account TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                result_json TEXT NOT NULL,
+                PRIMARY KEY (account, message_id)
+            )
+        """)
+
+
+def load_cached_mail(account, message_id):
+    with sqlite3.connect(DATABASE_PATH) as db:
+        row = db.execute(
+            "SELECT result_json FROM classified_mail WHERE account = ? AND message_id = ?",
+            (account, message_id),
+        ).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def load_all_cached_mail(account):
+    with sqlite3.connect(DATABASE_PATH) as db:
+        rows = db.execute(
+            "SELECT result_json FROM classified_mail WHERE account = ?",
+            (account,),
+        ).fetchall()
+    return [json.loads(row[0]) for row in rows]
+
+
+def save_cached_mail(account, mail):
+    with sqlite3.connect(DATABASE_PATH) as db:
+        db.execute(
+            "INSERT OR REPLACE INTO classified_mail (account, message_id, result_json) VALUES (?, ?, ?)",
+            (account, mail["id"], json.dumps(mail)),
+        )
+
+
+init_database()
+
 
 CATEGORIES = [
     "PROFESSOR/TA",
@@ -58,6 +115,7 @@ CATEGORIES = [
     "COURSES AND ANNOUNCEMENTS",
     "CLUBS AND SOCIETIES",
     "PLACEMENT AND INTERNSHIPS",
+    "INTERNATIONAL OPPORTUNITIES",
     "SCHOLARSHIPS",
     "HOSTEL MESS",
     "CR/BR UPDATES",
@@ -94,6 +152,12 @@ def make_oauth_flow(state=None, code_verifier=None):
         redirect_uri=REDIRECT_URI,
         code_verifier=code_verifier,
     )
+
+
+@app.get("/")
+def index():
+    """The web page: backend/static/index.html."""
+    return send_from_directory(app.static_folder, "index.html")
 
 
 @app.get("/health")
@@ -133,6 +197,15 @@ def login():
     )
 
     return redirect(authorization_url)
+
+
+@app.get("/auth/logout")
+def logout():
+    """Forget this browser session's login."""
+    key = session.get("sid")
+    google_credentials.pop(key, None)
+    session.clear()
+    return redirect("/")
 
 
 @app.get("/auth/callback")
@@ -189,11 +262,8 @@ def callback():
         session.pop("oauth_state", None)
         session.pop("oauth_code_verifier", None)
 
-        return jsonify({
-            "status": "signed_in",
-            "message": "Google OAuth succeeded. Gmail access is read-only.",
-            "has_credentials": credentials is not None,
-        })
+        # Back to the web page, which now loads the inbox.
+        return redirect("/")
 
     except Exception:
         app.logger.exception("Google OAuth callback failed")
@@ -230,7 +300,7 @@ def gmail_messages():
 
         result = service.users().messages().list(
             userId="me",
-            maxResults=10,
+            maxResults=INBOX_FETCH_LIMIT,
         ).execute()
 
         messages = result.get("messages", [])
@@ -339,6 +409,12 @@ def classify(mail):
             "campus recruitment", "job opening",
             "recruitment drive", "pre placement offer",
         ]),
+        ("INTERNATIONAL OPPORTUNITIES", [
+            "study abroad", "student exchange", "exchange programme",
+            "exchange program", "international research", "overseas program",
+            "overseas programme", "international opportunity",
+            "foreign university", "global internship",
+        ]),
         ("HOSTEL MESS", [
             "mess menu", "mess fee", "mess bill",
             "hostel", "warden", "room allotment",
@@ -407,6 +483,100 @@ def classify(mail):
     return None
 
 
+def fetch_and_classify(credentials, message_id):
+    """Fetch ONE Gmail message and classify it. Runs in a worker thread.
+
+    Each worker builds its own Gmail service, because the HTTP client
+    inside a service must not be shared between threads.
+    Returns the finished mail dict, or None if this one mail failed.
+    """
+    try:
+        service = build("gmail", "v1", credentials=credentials)
+
+        message = service.users().messages().get(
+            userId="me",
+            id=message_id,
+            format="full",
+        ).execute()
+
+        headers = message.get("payload", {}).get("headers", [])
+
+        header_map = {
+            header["name"].lower(): header["value"]
+            for header in headers
+        }
+
+        body_text = extract_text(message.get("payload", {}))
+        forwarded = parse_forwarded_email(body_text)
+
+        mail = {
+            "id": message["id"],
+            "actual_sender": header_map.get("from"),
+            "actual_subject": header_map.get("subject"),
+            "actual_date": header_map.get("date"),
+            "snippet": message.get("snippet", ""),
+            "body_preview": body_text[:3000],
+            # Gmail's own flags, so the UI can show unread / starred.
+            "unread": "UNREAD" in message.get("labelIds", []),
+            "starred": "STARRED" in message.get("labelIds", []),
+            **forwarded,
+        }
+
+        # Filled in below when Gemini finds a real deadline.
+        mail["deadline"] = None
+
+        # 1. Gemini is the primary classifier.
+        try:
+            ai_result = classify_with_ai(mail)
+        except Exception:
+            app.logger.exception("Gemini classifier failed")
+            ai_result = None
+
+        # Accept only results that use an exact frontend category.
+        if (
+            isinstance(ai_result, dict)
+            and ai_result.get("category") in CATEGORIES
+        ):
+            # The deadline is returned as its own field on the mail,
+            # not inside "classification".
+            mail["deadline"] = ai_result.pop("deadline", None)
+            mail["classification"] = ai_result
+
+        else:
+            # 2. If Gemini fails or returns an invalid result,
+            #    use the rule-based classifier.
+            app.logger.info(
+                "Gemini unavailable or returned an invalid category; "
+                "trying rule-based fallback."
+            )
+
+            try:
+                rule_result = classify(mail)
+            except Exception:
+                app.logger.exception("Rule-based classifier failed")
+                rule_result = None
+
+            if (
+                isinstance(rule_result, dict)
+                and rule_result.get("category") in CATEGORIES
+            ):
+                mail["classification"] = rule_result
+
+            else:
+                # 3. Final fallback if both classifiers fail.
+                mail["classification"] = {
+                    "category": "PERSONAL/OTHERS",
+                    "confidence": 0.0,
+                    "method": "fallback",
+                }
+
+        return mail
+
+    except Exception:
+        app.logger.exception("Could not process message %s", message_id)
+        return None
+
+
 @app.get("/gmail/inbox")
 def gmail_inbox():
     if not session.get("google_connected"):
@@ -423,89 +593,59 @@ def gmail_inbox():
             "error": "Credentials unavailable. Sign in again."
         }), 401
 
+    started = time.time()
+
     try:
         service = build("gmail", "v1", credentials=credentials)
 
+        # This quick call also refreshes the access token if it expired,
+        # before the worker threads start using the credentials.
         result = service.users().messages().list(
             userId="me",
-            maxResults=10,
+            maxResults=INBOX_FETCH_LIMIT,
         ).execute()
 
-        inbox = []
+        account = service.users().getProfile(userId="me").execute()[
+            "emailAddress"
+        ].lower()
 
-        for item in result.get("messages", []):
-            message = service.users().messages().get(
-                userId="me",
-                id=item["id"],
-                format="full",
-            ).execute()
+        message_ids = [item["id"] for item in result.get("messages", [])]
+        cached_by_id = {}
+        for mid in message_ids:
+            cached = load_cached_mail(account, mid)
+            if cached is not None:
+                cached_by_id[mid] = cached
+        missing_ids = [mid for mid in message_ids if mid not in cached_by_id]
 
-            headers = message.get("payload", {}).get("headers", [])
+        fresh_by_id = {}
 
-            header_map = {
-                header["name"].lower(): header["value"]
-                for header in headers
-            }
+        if missing_ids:
+            # Fetch + classify the new mails in parallel instead of one by one.
+            with ThreadPoolExecutor(max_workers=MAX_PARALLEL) as pool:
+                fresh_mails = list(pool.map(
+                    lambda mid: fetch_and_classify(credentials, mid),
+                    missing_ids,
+                ))
 
-            body_text = extract_text(message.get("payload", {}))
-            forwarded = parse_forwarded_email(body_text)
+            for mail in fresh_mails:
+                if mail is None:
+                    continue
 
-            mail = {
-                "id": message["id"],
-                "actual_sender": header_map.get("from"),
-                "actual_subject": header_map.get("subject"),
-                "actual_date": header_map.get("date"),
-                "snippet": message.get("snippet", ""),
-                "body_preview": body_text[:3000],
-                **forwarded,
-            }
+                fresh_by_id[mail["id"]] = mail
 
-            # 1. Gemini is the primary classifier.
-            try:
-                ai_result = classify_with_ai(mail)
-            except Exception:
-                app.logger.exception("Gemini classifier failed")
-                ai_result = None
+                # Save every completed result, including fallback classifications.
+                save_cached_mail(account, mail)
 
-            # Accept only results that use an exact frontend category.
-            if (
-                isinstance(ai_result, dict)
-                and ai_result.get("category") in CATEGORIES
-            ):
-                mail["classification"] = ai_result
-
-            else:
-                # 2. If Gemini fails or returns an invalid result,
-                #    use the rule-based classifier.
-                app.logger.info(
-                    "Gemini unavailable or returned an invalid category; "
-                    "trying rule-based fallback."
-                )
-
-                try:
-                    rule_result = classify(mail)
-                except Exception:
-                    app.logger.exception("Rule-based classifier failed")
-                    rule_result = None
-
-                if (
-                    isinstance(rule_result, dict)
-                    and rule_result.get("category") in CATEGORIES
-                ):
-                    mail["classification"] = rule_result
-
-                else:
-                    # 3. Final fallback if both classifiers fail.
-                    mail["classification"] = {
-                        "category": "PERSONAL/OTHERS",
-                        "confidence": 0.0,
-                        "method": "fallback",
-                    }
-
-            inbox.append(mail)
+        # Show all previously classified messages, including older ones that
+        # have fallen outside Gmail's latest-10 query, then add new results.
+        all_saved = {mail["id"]: mail for mail in load_all_cached_mail(account)}
+        all_saved.update(fresh_by_id)
+        inbox = list(all_saved.values())
 
         return jsonify({
             "count": len(inbox),
+            "from_cache": len(cached_by_id),
+            "took_seconds": round(time.time() - started, 2),
             "messages": inbox,
         })
 

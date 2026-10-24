@@ -1,0 +1,243 @@
+@import "tailwindcss";
+
+
+:root {
+  --background: 80 23% 97%;
+  --foreground: 100 10% 16%;
+  --card: 0 0% 100%;
+  --card-foreground: 100 10% 16%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 100 10% 16%;
+  --primary: 91 23% 19%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 80 20% 93%;
+  --secondary-foreground: 91 23% 19%;
+  --muted: 80 20% 93%;
+  --muted-foreground: 80 5% 46%;
+  --accent: 80 20% 93%;
+  --accent-foreground: 91 23% 19%;
+  --destructive: 0 91% 71%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 84 14% 87%;
+  --input: 84 14% 87%;
+  --ring: 82 17% 49%;
+  --radius: 0.5rem;
+  --sidebar-background: 0 0% 100%;
+  --sidebar-foreground: 80 5% 46%;
+  --sidebar-primary: 91 23% 19%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 80 20% 93%;
+  --sidebar-accent-foreground: 91 23% 19%;
+  --sidebar-border: 84 14% 87%;
+  --sidebar-ring: 82 17% 49%;
+}
+
+.dark {
+  --background: 96 16% 10%;
+  --foreground: 80 22% 91%;
+  --card: 96 14% 14%;
+  --card-foreground: 80 22% 91%;
+  --popover: 96 14% 14%;
+  --popover-foreground: 80 22% 91%;
+  --primary: 82 17% 49%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 92 13% 21%;
+  --secondary-foreground: 80 22% 91%;
+  --muted: 92 13% 21%;
+  --muted-foreground: 80 8% 68%;
+  --accent: 92 13% 21%;
+  --accent-foreground: 80 22% 91%;
+  --destructive: 20 70% 47%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 90 10% 27%;
+  --input: 90 10% 27%;
+  --ring: 82 17% 58%;
+  --radius: 0.5rem;
+  --sidebar-background: 96 15% 12%;
+  --sidebar-foreground: 80 8% 68%;
+  --sidebar-primary: 82 17% 49%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 92 13% 21%;
+  --sidebar-accent-foreground: 80 22% 91%;
+  --sidebar-border: 90 10% 27%;
+  --sidebar-ring: 82 17% 58%;
+}
+
+body {
+  margin: 0;
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: "Poppins", sans-serif;
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.22);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.34);
+}
+
+.insorta-app,
+.insorta-app button,
+.insorta-app input,
+.insorta-app label,
+.insorta-app section,
+.insorta-app aside,
+.insorta-app header,
+.insorta-app article {
+  transition-property: background-color, color, border-color, box-shadow, opacity;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+.insorta-mobile-drawer {
+  animation: insorta-drawer-in 180ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+
+.insorta-menu-overlay {
+  animation: insorta-overlay-in 140ms ease-out both;
+}
+
+@keyframes insorta-drawer-in {
+  from { opacity: 0.7; transform: translateX(-10px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes insorta-overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+html[data-theme="dark"],
+html[data-theme="dark"] body {
+  background-color: #20291c !important;
+  color: #f2f4ed !important;
+  color-scheme: dark;
+  transition: background-color 180ms cubic-bezier(0.2, 0.7, 0.2, 1), color 180ms cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+
+[data-theme="dark"] {
+  background-color: #20291c !important;
+  color: #f2f4ed !important;
+  color-scheme: dark;
+}
+
+[data-theme="dark"] [class*="bg-white"] {
+  background-color: #2b3527;
+}
+
+.insorta-sidebar {
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+}
+
+.insorta-nav-item {
+  transition: background-color 180ms cubic-bezier(0.2, 0.7, 0.2, 1), color 180ms cubic-bezier(0.2, 0.7, 0.2, 1), border-radius 180ms ease;
+}
+
+[data-theme="dark"] .insorta-sidebar {
+  background-color: rgb(43 53 39 / 88%) !important;
+}
+
+[data-theme="dark"] .insorta-sidebar .insorta-nav-selected {
+  background-color: rgb(132 147 106 / 24%) !important;
+}
+
+[data-theme="dark"] .insorta-sidebar .insorta-nav-item:hover {
+  background-color: rgb(248 248 243 / 7%) !important;
+}
+
+[data-theme="dark"] [class*="bg-[#F8F8F3]"] {
+  background-color: #20291c !important;
+}
+
+[data-theme="dark"] [class*="bg-[#303C25]"] {
+  background-color: #394532 !important;
+}
+
+[data-theme="dark"] [class*="bg-[#DFE3D8]"] {
+  background-color: #495644 !important;
+}
+
+[data-theme="dark"] [class*="bg-[#FBFCF9]"],
+[data-theme="dark"] [class*="bg-[#F0F1EC]"] {
+  background-color: #303a2c !important;
+}
+
+[data-theme="dark"] [class*="bg-[#EEF1E7]"],
+[data-theme="dark"] [class*="bg-[#E8EBE1]"] {
+  background-color: #394532 !important;
+}
+
+[data-theme="dark"] [class*="bg-[#F7E5D0]"] {
+  background-color: #493824 !important;
+}
+
+[data-theme="dark"] [class*="border-[#DFE3D8]"],
+[data-theme="dark"] [class*="border-[#F0F1EC]"] {
+  border-color: #3d4937 !important;
+}
+
+[data-theme="dark"] [class*="hover:border-[#BFC7B5]"]:hover {
+  border-color: #66745b !important;
+}
+
+[data-theme="dark"] [class*="text-[#252B23]"],
+[data-theme="dark"] [class*="text-[#303C25]"] {
+  color: #e5eadc !important;
+}
+
+[data-theme="dark"] [class*="text-[#566744]"],
+[data-theme="dark"] [class*="text-[#84936A]"] {
+  color: #b5c89b !important;
+}
+
+[data-theme="dark"] [class*="text-[#73796E]"],
+[data-theme="dark"] [class*="text-[#93998C]"],
+[data-theme="dark"] [class*="text-[#B1B6AA]"] {
+  color: #b7c0ad !important;
+}
+
+[data-theme="dark"] [class*="text-[#B86A20]"],
+[data-theme="dark"] [class*="text-[#9D5A1C]"],
+[data-theme="dark"] [class*="text-[#E58A35]"] {
+  color: #f1b56e !important;
+}
+
+[data-theme="dark"] [class*="bg-[#566744]"] {
+  background-color: #84936a !important;
+}
+
+[data-theme="dark"] [class*="bg-[#E58A35]"] {
+  background-color: #c77a32 !important;
+}
+
+[data-theme="dark"] [class*="ring-[#F8F8F3]"] {
+  --tw-ring-color: #20291c !important;
+}
+
+[data-theme="dark"] [class*="placeholder:text-[#93998C]"]::placeholder {
+  color: #a4ae99 !important;
+}
+
+[data-theme="dark"] ::selection {
+  color: #20291c;
+  background: #b5c89b;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .insorta-app *,
+  .insorta-app *::before,
+  .insorta-app *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

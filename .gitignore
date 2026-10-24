@@ -1,4 +1,7 @@
 .env
 .venv/
 __pycache__/
+backend/instance/
 token*.json
+# Frontend dependencies
+frontend/node_modules/
