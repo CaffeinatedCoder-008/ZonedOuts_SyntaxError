@@ -51,6 +51,21 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 google_credentials = {}
 
 
+CATEGORIES = [
+    "PROFESSOR/TA",
+    "ACADEMIC AND SECTIONS",
+    "DEPARTMENT AND ADMIN",
+    "COURSES AND ANNOUNCEMENTS",
+    "CLUBS AND SOCIETIES",
+    "PLACEMENT AND INTERNSHIPS",
+    "SCHOLARSHIPS",
+    "HOSTEL MESS",
+    "CR/BR UPDATES",
+    "PROMOTION/NEWSLETTERS",
+    "PERSONAL/OTHERS",
+]
+
+
 def sid():
     """Return a stable, random identifier for the current browser session."""
     if "sid" not in session:
@@ -292,21 +307,8 @@ def parse_forwarded_email(text):
     return result
 
 
-CATEGORIES = [
-    "Academics",
-    "Academic Office",
-    "Clubs & Societies",
-    "Placements & Internships",
-    "Hostel & Mess",
-    "Student Bodies",
-    "Promotions",
-    "Newsletters",
-    "Personal / Other",
-]
-
-
 def classify(mail):
-    """Rule-based baseline for IIT Roorkee campus emails."""
+    """Rule-based fallback classifier for IIT Roorkee campus emails."""
 
     sender = (
         mail.get("original_sender")
@@ -326,44 +328,58 @@ def classify(mail):
     text = f"{sender} {subject} {snippet} {body}"
 
     rules = [
-        ("Academic Office", [
-            "academic affairs office", "undergraduate section",
-            "academic calendar", "grade card", "exam form",
-            "feedback of ugtas", "feedback on the performance",
-            "semester registration", "dean academic affairs",
+        ("SCHOLARSHIPS", [
+            "scholarship", "fellowship", "student grant",
+            "financial aid",
         ]),
-        ("Placements & Internships", [
+        ("PLACEMENT AND INTERNSHIPS", [
             "placement cell", "placement office",
             "internship opportunity", "internship application",
-            "pre-placement talk", "campus recruitment",
-            "job opening", "recruitment drive", "pre placement offer",
+            "pre-placement talk", "pre placement talk",
+            "campus recruitment", "job opening",
+            "recruitment drive", "pre placement offer",
         ]),
-        ("Hostel & Mess", [
-            "hostel", "mess menu", "mess fee", "warden",
-            "room allotment",
+        ("HOSTEL MESS", [
+            "mess menu", "mess fee", "mess bill",
+            "hostel", "warden", "room allotment",
         ]),
-        ("Student Bodies", [
-            "nss iit roorkee", "national service scheme",
-            "sociothon", "students' senate", "student council",
-            "gymkhana",
+        ("CR/BR UPDATES", [
+            "class representative", "batch representative",
+            "cr update", "br update",
         ]),
-        ("Clubs & Societies", [
+        ("PROFESSOR/TA", [
+            "teaching assistant", "course instructor",
+            "office hours", "professor", "faculty advisor",
+        ]),
+        ("DEPARTMENT AND ADMIN", [
+            "academic affairs office", "undergraduate section",
+            "dean academic affairs", "department office",
+            "registrar office", "academic calendar",
+            "grade card", "exam form", "semester registration",
+            "feedback of ugtas", "feedback on the performance",
+        ]),
+        ("CLUBS AND SOCIETIES", [
             "helios", "economics circle", "enactus",
             "inter iit tech meet", "openai student collective",
-            "intro talk", "club recruitment", "society recruitment",
-            "club orientation", "student club", "workshop",
-            "auditions", "conclave",
+            "club recruitment", "society recruitment",
+            "club orientation", "student club",
+            "club talk", "intro talk", "auditions",
+            "workshop", "conclave",
         ]),
-        ("Academics", [
-            "assignment", "tutorial", "quiz", "midsem", "endsem",
-            "lab submission", "course material", "lecture",
+        ("ACADEMIC AND SECTIONS", [
+            "section ", "section-wise", "section wise",
+            "tutorial group", "class timetable",
+            "section timetable", "academic section",
         ]),
-        ("Promotions", [
-            "discount", "limited time offer", "coupon", "cashback",
-            "special offer",
+        ("COURSES AND ANNOUNCEMENTS", [
+            "assignment", "tutorial", "quiz", "midsem",
+            "endsem", "lab submission", "course material",
+            "lecture", "course announcement",
         ]),
-        ("Newsletters", [
-            "newsletter", "weekly digest", "monthly digest", "unsubscribe",
+        ("PROMOTION/NEWSLETTERS", [
+            "newsletter", "weekly digest", "monthly digest",
+            "unsubscribe", "discount", "limited time offer",
+            "coupon", "cashback", "special offer",
         ]),
     ]
 
@@ -375,7 +391,7 @@ def classify(mail):
 
         if matched:
             app.logger.debug(
-                "Rule classifier: subject=%r category=%r matched=%r",
+                "Fallback rule classifier: subject=%r category=%r matched=%r",
                 subject,
                 category,
                 matched,
@@ -387,7 +403,7 @@ def classify(mail):
                 "method": "rules",
             }
 
-    # No rule matched; let Gemini try.
+    # No rule matched.
     return None
 
 
@@ -444,26 +460,47 @@ def gmail_inbox():
                 **forwarded,
             }
 
-            # Rule classifier first; Gemini only for unmatched emails.
-            rule_result = classify(mail)
+            # 1. Gemini is the primary classifier.
+            try:
+                ai_result = classify_with_ai(mail)
+            except Exception:
+                app.logger.exception("Gemini classifier failed")
+                ai_result = None
 
-            if rule_result is not None:
-                mail["classification"] = rule_result
+            # Accept only results that use an exact frontend category.
+            if (
+                isinstance(ai_result, dict)
+                and ai_result.get("category") in CATEGORIES
+            ):
+                mail["classification"] = ai_result
+
             else:
-                try:
-                    ai_result = classify_with_ai(mail)
-                except Exception:
-                    app.logger.exception("Gemini classifier failed")
-                    ai_result = None
+                # 2. If Gemini fails or returns an invalid result,
+                #    use the rule-based classifier.
+                app.logger.info(
+                    "Gemini unavailable or returned an invalid category; "
+                    "trying rule-based fallback."
+                )
 
-                mail["classification"] = (
-                    ai_result
-                    or {
-                        "category": "Personal / Other",
+                try:
+                    rule_result = classify(mail)
+                except Exception:
+                    app.logger.exception("Rule-based classifier failed")
+                    rule_result = None
+
+                if (
+                    isinstance(rule_result, dict)
+                    and rule_result.get("category") in CATEGORIES
+                ):
+                    mail["classification"] = rule_result
+
+                else:
+                    # 3. Final fallback if both classifiers fail.
+                    mail["classification"] = {
+                        "category": "PERSONAL/OTHERS",
                         "confidence": 0.0,
                         "method": "fallback",
                     }
-                )
 
             inbox.append(mail)
 
